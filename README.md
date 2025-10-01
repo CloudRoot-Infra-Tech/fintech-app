@@ -194,7 +194,28 @@ Access Grafana local instance:
 export POD_NAME=$(kubectl --namespace monitoring get pod -l "app.kubernetes.io/name=grafana,app.kubernetes.io/instance=prometheus-stack" -oname)
 kubectl --namespace monitoring port-forward $POD_NAME 3000 
 
-#
+
+
+
+# Resetting Grafana Password
+
+Step 1: Identify the Grafana Pod
+List the pods in the namespace where Grafana is deployed (e.g., monitoring):
+
+kubectl get pods -n monitoring
+Step 2: Exec into the Grafana Pod
+Pick a pod name (e.g., grafana-xyz) and exec into it:
+
+kubectl exec -it <grafana-pod-name> -n monitoring -- /bin/sh
+or use /bin/bash if available.
+
+Step 3: Use grafana-cli to reset the admin password
+Inside the pod, run:
+
+grafana-cli admin reset-admin-password <newpassword>
+Example:
+
+grafana-cli admin reset-admin-password admin123
 
 
 
