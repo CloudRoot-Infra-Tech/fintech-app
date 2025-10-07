@@ -138,7 +138,7 @@ jobs:
 
       - name: Configure kubectl via AWS CLI
         run: |
-          CLUSTER_NAME=${{ github.event.inputs.environment || 'prod' }}-dominion-cluster
+          CLUSTER_NAME=${{ github.event.inputs.environment || 'prod' }}-cloudsroot-cluster
           aws eks update-kubeconfig --region $AWS_REGION --name "$CLUSTER_NAME"
 
       - name: Verify EKS Access
