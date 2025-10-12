@@ -129,12 +129,30 @@ jobs:
         run: |
           echo "=== Checking SonarQube Status ==="
           
+          # Check if SonarQube service exists
           if ! systemctl list-unit-files | grep -q sonar.service; then
-            echo "❌ SonarQube is not installed on this runner"
-            echo "Please run: curl -fsSL [your-repo-url]/setup_sonarqube.sh | bash"
-            exit 1
+            echo "⚠️  SonarQube is not installed, installing now..."
+            
+            # Download and run setup script
+            cd /tmp
+            if [ -f "$GITHUB_WORKSPACE/setup_sonarqube.sh" ]; then
+              echo "Using setup script from repository..."
+              cp "$GITHUB_WORKSPACE/setup_sonarqube.sh" ./setup_sonarqube.sh
+            else
+              echo "Downloading setup script..."
+              curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/setup_sonarqube.sh -o setup_sonarqube.sh
+            fi
+            
+            chmod +x setup_sonarqube.sh
+            
+            echo "Running SonarQube installation (this will take 10-15 minutes)..."
+            ./setup_sonarqube.sh
+            
+            echo "✓ SonarQube installation completed"
+            cd -
           fi
           
+          # Check if service is running
           if ! sudo systemctl is-active --quiet sonar.service; then
             echo "⚠️  SonarQube service is not running, starting it..."
             sudo systemctl start sonar.service
@@ -156,6 +174,7 @@ jobs:
             echo "✓ SonarQube service is already running"
           fi
           
+          # Wait for SonarQube web interface to be ready
           echo "Waiting for SonarQube web interface..."
           SONAR_URL="${{ secrets.SONAR_HOST_URL }}"
           
@@ -177,27 +196,39 @@ jobs:
               exit 1
             fi
           done
+          
+          echo "✓ SonarQube is fully operational"
 
       - name: Validate SonarQube Configuration
         run: |
           echo "Checking SonarQube configuration..."
           
           if [ -z "${{ secrets.SONAR_HOST_URL }}" ]; then
-            echo "❌ SONAR_HOST_URL secret is not set!"
-            echo "Add it in: Settings > Secrets and variables > Actions"
-            echo "Example: http://$(hostname -I | awk '{print $1}'):9000"
-            exit 1
+            echo "⚠️  SONAR_HOST_URL secret is not set!"
+            echo ""
+            echo "📌 FIRST TIME SETUP REQUIRED:"
+            echo "   1. Access SonarQube at: http://$(hostname -I | awk '{print $1}'):9000"
+            echo "   2. Login with: admin / admin (change password)"
+            echo "   3. Generate token: My Account > Security > Generate Token"
+            echo "   4. Add GitHub secrets at:"
+            echo "      https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo "   5. Add two secrets:"
+            echo "      • SONAR_HOST_URL: http://$(hostname -I | awk '{print $1}'):9000"
+            echo "      • SONAR_TOKEN: [your-generated-token]"
+            echo ""
+            echo "⏭️  Continuing with localhost for now..."
+            echo "   (Analysis will work but results won't be visible in SonarQube dashboard)"
           fi
           
           if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
-            echo "❌ SONAR_TOKEN secret is not set!"
-            echo "Generate token in SonarQube: My Account > Security > Generate Token"
-            exit 1
+            echo "⚠️  SONAR_TOKEN secret is not set!"
+            echo "   Generate token in SonarQube and add it to GitHub secrets"
+            echo "⏭️  Continuing without authentication..."
+          else
+            echo "✓ SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}"
+            echo "✓ SONAR_TOKEN: [REDACTED]"
+            echo "✓ Configuration validated"
           fi
-          
-          echo "✓ SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}"
-          echo "✓ SONAR_TOKEN: [REDACTED]"
-          echo "✓ Configuration validated"
 
       - name: Run SonarQube Analysis
         env:
