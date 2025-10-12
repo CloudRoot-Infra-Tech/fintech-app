@@ -90,19 +90,56 @@ jobs:
           done
           
           # Extract
+          echo "Extracting Maven..."
           sudo tar -xzf "apache-maven-${MAVEN_VERSION}-bin.tar.gz" -C /opt/
+          
+          # Verify extraction
+          if [ ! -d "/opt/apache-maven-${MAVEN_VERSION}" ]; then
+            echo "❌ Extraction failed - directory not found"
+            ls -la /opt/
+            exit 1
+          fi
+          
+          echo "✓ Extracted to /opt/apache-maven-${MAVEN_VERSION}"
+          ls -la "/opt/apache-maven-${MAVEN_VERSION}/bin/"
+          
+          # Create symlink
+          echo "Creating symlink..."
+          sudo rm -f /opt/maven
           sudo ln -sfn "/opt/apache-maven-${MAVEN_VERSION}" /opt/maven
+          
+          # Verify symlink
+          if [ ! -L /opt/maven ]; then
+            echo "❌ Symlink creation failed"
+            exit 1
+          fi
+          
+          echo "✓ Symlink created"
+          ls -la /opt/maven
+          
+          # Set permissions
+          echo "Setting permissions..."
           sudo chmod -R 755 "/opt/apache-maven-${MAVEN_VERSION}"
+          
+          # Verify Maven binary exists
+          if [ ! -f /opt/maven/bin/mvn ]; then
+            echo "❌ Maven binary not found at /opt/maven/bin/mvn"
+            ls -la /opt/maven/bin/
+            exit 1
+          fi
           
           # Add to PATH
           echo "/opt/maven/bin" >> $GITHUB_PATH
           
-          # Verify
+          # Verify with full path
+          echo "✓ Verifying Maven installation..."
           /opt/maven/bin/mvn -version
           
           # Cleanup
           cd ~
           rm -rf $MAVEN_DIR
+          
+          echo "✓ Maven installation complete"
 
       - name: Verify Maven Installation
         run: |
