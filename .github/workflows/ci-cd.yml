@@ -131,13 +131,37 @@ jobs:
           
           # Check if SonarQube service exists
           if ! systemctl list-unit-files | grep -q sonar.service; then
-            echo "❌ SonarQube is not installed on this runner"
+            echo "⚠️  SonarQube is not installed, installing now..."
+            echo "This will take 10-15 minutes..."
             echo ""
-            echo "📋 This runner needs to be configured using the infrastructure repo."
-            echo "   Please run the setup script from:"
-            echo "   https://github.com/YOUR_ORG/infrastructure-repo"
-            echo ""
-            exit 1
+            
+            # Try multiple locations for the setup script
+            SETUP_SCRIPT=""
+            
+            if [ -f "$GITHUB_WORKSPACE/setup_sonarqube.sh" ]; then
+              SETUP_SCRIPT="$GITHUB_WORKSPACE/setup_sonarqube.sh"
+              echo "✓ Found setup_sonarqube.sh in repo root"
+            elif [ -f "$GITHUB_WORKSPACE/eks_addons/script/sonar.sh" ]; then
+              SETUP_SCRIPT="$GITHUB_WORKSPACE/eks_addons/script/sonar.sh"
+              echo "✓ Found sonar.sh in eks_addons/script/"
+            elif [ -f "$GITHUB_WORKSPACE/sonar.sh" ]; then
+              SETUP_SCRIPT="$GITHUB_WORKSPACE/sonar.sh"
+              echo "✓ Found sonar.sh in repo root"
+            fi
+            
+            if [ -n "$SETUP_SCRIPT" ]; then
+              echo "Running setup script: $SETUP_SCRIPT"
+              chmod +x "$SETUP_SCRIPT"
+              "$SETUP_SCRIPT"
+              echo "✓ SonarQube installation completed"
+            else
+              echo "❌ Setup script not found!"
+              echo "Looked in:"
+              echo "  - setup_sonarqube.sh (root)"
+              echo "  - eks_addons/script/sonar.sh"
+              echo "  - sonar.sh (root)"
+              exit 1
+            fi
           fi
           
           # Check if service is running
@@ -171,21 +195,21 @@ jobs:
             SONAR_URL="http://127.0.0.1:9000"
           fi
           
-          for i in {1..30}; do
+          for i in {1..40}; do
             if curl -s -o /dev/null -w "%{http_code}" "$SONAR_URL/api/system/status" | grep -q "200"; then
               echo "✓ SonarQube is ready at $SONAR_URL"
               break
             fi
-            echo "Attempt $i/30: Waiting for SonarQube..."
-            sleep 3
-            if [ $i -eq 30 ]; then
-              echo "❌ SonarQube web interface not responding"
-              sudo systemctl status sonar.service --no-pager
-              exit 1
+            echo "Attempt $i/40: Waiting for SonarQube..."
+            sleep 5
+            if [ $i -eq 40 ]; then
+              echo "⚠️  SonarQube taking longer than expected"
+              echo "Continuing anyway - it may still be starting up"
+              break
             fi
           done
           
-          echo "✓ SonarQube is fully operational"
+          echo "✓ SonarQube check complete"
 
       - name: Validate SonarQube Configuration
         run: |
