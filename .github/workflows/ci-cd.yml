@@ -26,6 +26,8 @@ env:
   AWS_REGION: us-east-2
   AWS_ACCOUNT_ID: 248189908663
   ECR_REPO: fintech-app
+  M2_HOME: /opt/maven
+  MAVEN_HOME: /opt/maven
 
 jobs:
   build-and-push:
@@ -45,11 +47,19 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Build with Maven
+      - name: Setup Maven PATH
         run: |
-          source /etc/profile.d/maven.sh || true
-          mvn clean package -DskipTests
-          
+          echo "/opt/maven/bin" >> $GITHUB_PATH
+          echo "M2_HOME=/opt/maven" >> $GITHUB_ENV
+          echo "MAVEN_HOME=/opt/maven" >> $GITHUB_ENV
+
+      - name: Verify Maven Installation
+        run: |
+          mvn -version
+          echo "Maven location: $(which mvn)"
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v2
