@@ -19,7 +19,7 @@ A full-stack Java-based FinTech application to manage and track credit card expe
   - SonarQube static analysis
   - Docker image build + push to Amazon ECR
   - Kubernetes deployment to Amazon EKS via GitHub Actions
-- Exposed using ALB Ingress via `https://dominionsystem.org`
+- Exposed using ALB Ingress via `https://cloudsroot.org`
 
 ---
 
@@ -78,7 +78,7 @@ SONAR_HOST_URL	URL of your SonarQube instance
 AWS_ACCESS_KEY_ID	AWS credentials for ECR/EKS
 AWS_SECRET_ACCESS_KEY	AWS credentials
 🌍 Public Access
-✅ https://dominionsystem.org
+✅ https://cloudsroot.com
 Hosted via AWS ALB Ingress Controller.
 
 📈 Future Improvements (Open for Contribution)
@@ -93,9 +93,9 @@ Pie charts & vendor analytics with Chart.js
 RESTful APIs for mobile client integration
 
 👨‍💻 Author
-Name: Ndifor Fusi
-Role: DevOps Engineer Instructor
-GitHub: @ndiforfusi
+Name: Emmanuel Tetteh
+Role: DevOps Engineer 
+GitHub: @EmmadevAI
 
 📄 License
 This project is open-source and licensed under the MIT License.
