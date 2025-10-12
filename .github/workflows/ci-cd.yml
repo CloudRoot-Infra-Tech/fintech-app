@@ -26,8 +26,6 @@ env:
   AWS_REGION: us-east-2
   AWS_ACCOUNT_ID: 248189908663
   ECR_REPO: fintech-app
-  M2_HOME: /opt/maven
-  MAVEN_HOME: /opt/maven
 
 jobs:
   build-and-push:
@@ -52,12 +50,12 @@ jobs:
         run: |
           # Check if mvn is available
           if command -v mvn &> /dev/null; then
-            echo "✓ Maven already available via setup-java"
+            echo "✓ Maven already available"
             mvn -version
             exit 0
           fi
           
-          # If not, check /opt/maven
+          # Check /opt/maven
           if [ -f /opt/maven/bin/mvn ]; then
             echo "✓ Maven found at /opt/maven"
             echo "/opt/maven/bin" >> $GITHUB_PATH
@@ -65,7 +63,7 @@ jobs:
             exit 0
           fi
           
-          # Last resort: install it
+          # Install Maven
           echo "Installing Maven 3.9.9..."
           MAVEN_VERSION=3.9.9
           MAVEN_DIR=/tmp/maven-install
@@ -73,88 +71,44 @@ jobs:
           mkdir -p $MAVEN_DIR
           cd $MAVEN_DIR
           
-          # Download with retries
           for i in {1..3}; do
             if wget --no-verbose "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; then
               echo "✓ Download successful"
               break
-            else
-              echo "Attempt $i failed, retrying..."
-              sleep 2
             fi
-            
-            if [ $i -eq 3 ]; then
-              echo "❌ Download failed after 3 attempts"
-              exit 1
-            fi
+            sleep 2
+            [ $i -eq 3 ] && exit 1
           done
           
-          # Extract
           echo "Extracting Maven..."
           sudo tar -xzf "apache-maven-${MAVEN_VERSION}-bin.tar.gz" -C /opt/
           
-          # Verify extraction
-          if [ ! -d "/opt/apache-maven-${MAVEN_VERSION}" ]; then
-            echo "❌ Extraction failed - directory not found"
-            ls -la /opt/
-            exit 1
-          fi
+          [ ! -d "/opt/apache-maven-${MAVEN_VERSION}" ] && exit 1
           
-          echo "✓ Extracted to /opt/apache-maven-${MAVEN_VERSION}"
-          ls -la "/opt/apache-maven-${MAVEN_VERSION}/bin/"
-          
-          # Create symlink
           echo "Creating symlink..."
           if [ -d /opt/maven ] && [ ! -L /opt/maven ]; then
-            echo "Removing existing Maven directory..."
             sudo rm -rf /opt/maven
           elif [ -L /opt/maven ]; then
-            echo "Removing existing Maven symlink..."
             sudo rm -f /opt/maven
           fi
           
           sudo ln -sfn "/opt/apache-maven-${MAVEN_VERSION}" /opt/maven
-          
-          # Verify symlink
-          if [ ! -L /opt/maven ]; then
-            echo "❌ Symlink creation failed"
-            exit 1
-          fi
-          
-          echo "✓ Symlink created"
-          ls -la /opt/maven
-          
-          # Set permissions
-          echo "Setting permissions..."
           sudo chmod -R 755 "/opt/apache-maven-${MAVEN_VERSION}"
           
-          # Verify Maven binary exists
-          if [ ! -f /opt/maven/bin/mvn ]; then
-            echo "❌ Maven binary not found at /opt/maven/bin/mvn"
-            ls -la /opt/maven/bin/
-            exit 1
-          fi
+          [ ! -f /opt/maven/bin/mvn ] && exit 1
           
-          # Add to PATH
           echo "/opt/maven/bin" >> $GITHUB_PATH
-          
-          # Verify with full path
-          echo "✓ Verifying Maven installation..."
           /opt/maven/bin/mvn -version
           
-          # Cleanup
           cd ~
           rm -rf $MAVEN_DIR
-          
           echo "✓ Maven installation complete"
 
       - name: Verify Maven Installation
         run: |
-          # Try with PATH first
           if command -v mvn &> /dev/null; then
             echo "✓ Maven found in PATH"
             mvn -version
-          # Fallback to direct path
           elif [ -f /opt/maven/bin/mvn ]; then
             echo "✓ Maven found at /opt/maven/bin/mvn"
             /opt/maven/bin/mvn -version
@@ -165,24 +119,107 @@ jobs:
 
       - name: Build with Maven
         run: |
-          # Use mvn if in PATH, otherwise use full path
           if command -v mvn &> /dev/null; then
             mvn clean package -DskipTests
           else
             /opt/maven/bin/mvn clean package -DskipTests
           fi
 
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v2
+      - name: Ensure SonarQube is Running
+        run: |
+          echo "=== Checking SonarQube Status ==="
+          
+          if ! systemctl list-unit-files | grep -q sonar.service; then
+            echo "❌ SonarQube is not installed on this runner"
+            echo "Please run: curl -fsSL [your-repo-url]/setup_sonarqube.sh | bash"
+            exit 1
+          fi
+          
+          if ! sudo systemctl is-active --quiet sonar.service; then
+            echo "⚠️  SonarQube service is not running, starting it..."
+            sudo systemctl start sonar.service
+            
+            echo "Waiting for SonarQube to start..."
+            for i in {1..60}; do
+              if sudo systemctl is-active --quiet sonar.service; then
+                echo "✓ SonarQube service started"
+                break
+              fi
+              sleep 2
+              if [ $i -eq 60 ]; then
+                echo "❌ SonarQube failed to start"
+                sudo journalctl -u sonar.service -n 50 --no-pager
+                exit 1
+              fi
+            done
+          else
+            echo "✓ SonarQube service is already running"
+          fi
+          
+          echo "Waiting for SonarQube web interface..."
+          SONAR_URL="${{ secrets.SONAR_HOST_URL }}"
+          
+          if [ -z "$SONAR_URL" ]; then
+            echo "⚠️  SONAR_HOST_URL not set, using localhost"
+            SONAR_URL="http://127.0.0.1:9000"
+          fi
+          
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" "$SONAR_URL/api/system/status" | grep -q "200"; then
+              echo "✓ SonarQube is ready at $SONAR_URL"
+              break
+            fi
+            echo "Attempt $i/30: Waiting for SonarQube..."
+            sleep 3
+            if [ $i -eq 30 ]; then
+              echo "❌ SonarQube web interface not responding"
+              sudo systemctl status sonar.service --no-pager
+              exit 1
+            fi
+          done
+
+      - name: Validate SonarQube Configuration
+        run: |
+          echo "Checking SonarQube configuration..."
+          
+          if [ -z "${{ secrets.SONAR_HOST_URL }}" ]; then
+            echo "❌ SONAR_HOST_URL secret is not set!"
+            echo "Add it in: Settings > Secrets and variables > Actions"
+            echo "Example: http://$(hostname -I | awk '{print $1}'):9000"
+            exit 1
+          fi
+          
+          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "❌ SONAR_TOKEN secret is not set!"
+            echo "Generate token in SonarQube: My Account > Security > Generate Token"
+            exit 1
+          fi
+          
+          echo "✓ SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}"
+          echo "✓ SONAR_TOKEN: [REDACTED]"
+          echo "✓ Configuration validated"
+
+      - name: Run SonarQube Analysis
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=fintech-app
-            -Dsonar.projectName='fintech-app'
-            -Dsonar.sources=.
+        run: |
+          echo "Running SonarQube analysis..."
+          
+          if command -v mvn &> /dev/null; then
+            MVN_CMD="mvn"
+          else
+            MVN_CMD="/opt/maven/bin/mvn"
+          fi
+          
+          $MVN_CMD sonar:sonar \
+            -Dsonar.projectKey=fintech-app \
+            -Dsonar.projectName=fintech-app \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.login=$SONAR_TOKEN \
             -Dsonar.java.binaries=target/classes
+          
+          echo "✓ SonarQube analysis completed"
 
       - name: Set Image Tag
         id: set-tag
