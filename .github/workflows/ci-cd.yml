@@ -105,7 +105,14 @@ jobs:
           
           # Create symlink
           echo "Creating symlink..."
-          sudo rm -f /opt/maven
+          if [ -d /opt/maven ] && [ ! -L /opt/maven ]; then
+            echo "Removing existing Maven directory..."
+            sudo rm -rf /opt/maven
+          elif [ -L /opt/maven ]; then
+            echo "Removing existing Maven symlink..."
+            sudo rm -f /opt/maven
+          fi
+          
           sudo ln -sfn "/opt/apache-maven-${MAVEN_VERSION}" /opt/maven
           
           # Verify symlink
