@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===== VARIABLES =====
-MAVEN_VERSION="3.9.10"
+MAVEN_VERSION="3.9.9"
 SONARQUBE_VERSION="10.5.1.90531"
 POSTGRES_USER="ddsonar"
 POSTGRES_DB="ddsonarqube"
@@ -55,9 +55,9 @@ install_aws_cli() {
 install_maven() {
   if ! command -v mvn &>/dev/null; then
     echo "Maven not found, installing..."
-  elif mvn -version 2>/dev/null | grep -q "$MAVEN_VERSION"; then
+  elif /opt/maven/bin/mvn -version 2>/dev/null | grep -q "$MAVEN_VERSION"; then
     echo "✓ Maven $MAVEN_VERSION already installed."
-    mvn -version
+    /opt/maven/bin/mvn -version
     return 0
   else
     echo "Different Maven version found, installing $MAVEN_VERSION..."
@@ -94,11 +94,17 @@ EOF
       echo 'if [ -f /etc/profile.d/maven.sh ]; then source /etc/profile.d/maven.sh; fi' >> ~/.bashrc
     fi
 
-    # Source for current session
-    source /etc/profile.d/maven.sh
+    # Export for current session - direct export is more reliable
+    export M2_HOME=/opt/maven
+    export PATH=$M2_HOME/bin:$PATH
+    
+    # Also add to GitHub Actions PATH if running in Actions
+    if [ -n "${GITHUB_PATH:-}" ]; then
+      echo "/opt/maven/bin" >> "$GITHUB_PATH"
+    fi
     
     echo "Verifying Maven installation..."
-    mvn -version
+    /opt/maven/bin/mvn -version
   fi
 }
 

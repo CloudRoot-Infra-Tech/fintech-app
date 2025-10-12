@@ -66,8 +66,8 @@ jobs:
           fi
           
           # Last resort: install it
-          echo "Installing Maven 3.9.10..."
-          MAVEN_VERSION=3.9.10
+          echo "Installing Maven 3.9.9..."
+          MAVEN_VERSION=3.9.9
           MAVEN_DIR=/tmp/maven-install
           
           mkdir -p $MAVEN_DIR
@@ -75,7 +75,7 @@ jobs:
           
           # Download with retries
           for i in {1..3}; do
-            if wget --no-verbose "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; then
+            if wget --no-verbose "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; then
               echo "✓ Download successful"
               break
             else
