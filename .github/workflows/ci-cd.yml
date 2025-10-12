@@ -47,16 +47,22 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Maven PATH
+      - name: Setup Maven (Fallback if not in /opt)
         run: |
+          if [ ! -f /opt/maven/bin/mvn ]; then
+            echo "Maven not found in /opt, installing Maven 3.9.10..."
+            cd /tmp
+            wget -q https://dlcdn.apache.org/maven/maven-3/3.9.10/binaries/apache-maven-3.9.10-bin.tar.gz
+            sudo tar -xzf apache-maven-3.9.10-bin.tar.gz -C /opt
+            sudo ln -sfn /opt/apache-maven-3.9.10 /opt/maven
+            rm apache-maven-3.9.10-bin.tar.gz
+          fi
+          
+          # Add to PATH for this job
           echo "/opt/maven/bin" >> $GITHUB_PATH
-          echo "M2_HOME=/opt/maven" >> $GITHUB_ENV
-          echo "MAVEN_HOME=/opt/maven" >> $GITHUB_ENV
 
       - name: Verify Maven Installation
-        run: |
-          mvn -version
-          echo "Maven location: $(which mvn)"
+        run: mvn -version
 
       - name: Build with Maven
         run: mvn clean package -DskipTests
