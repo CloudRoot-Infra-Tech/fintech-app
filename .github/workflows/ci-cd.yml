@@ -41,31 +41,92 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v3
 
-      - name: Set up JDK
+      - name: Set up JDK with Maven
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'maven'
 
-      - name: Setup Maven (Fallback if not in /opt)
+      - name: Setup Maven from Apache (if needed)
         run: |
-          if [ ! -f /opt/maven/bin/mvn ]; then
-            echo "Maven not found in /opt, installing Maven 3.9.10..."
-            cd /tmp
-            wget -q https://dlcdn.apache.org/maven/maven-3/3.9.10/binaries/apache-maven-3.9.10-bin.tar.gz
-            sudo tar -xzf apache-maven-3.9.10-bin.tar.gz -C /opt
-            sudo ln -sfn /opt/apache-maven-3.9.10 /opt/maven
-            rm apache-maven-3.9.10-bin.tar.gz
+          # Check if mvn is available
+          if command -v mvn &> /dev/null; then
+            echo "✓ Maven already available via setup-java"
+            mvn -version
+            exit 0
           fi
           
-          # Add to PATH for this job
+          # If not, check /opt/maven
+          if [ -f /opt/maven/bin/mvn ]; then
+            echo "✓ Maven found at /opt/maven"
+            echo "/opt/maven/bin" >> $GITHUB_PATH
+            /opt/maven/bin/mvn -version
+            exit 0
+          fi
+          
+          # Last resort: install it
+          echo "Installing Maven 3.9.10..."
+          MAVEN_VERSION=3.9.10
+          MAVEN_DIR=/tmp/maven-install
+          
+          mkdir -p $MAVEN_DIR
+          cd $MAVEN_DIR
+          
+          # Download with retries
+          for i in {1..3}; do
+            if wget --no-verbose "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; then
+              echo "✓ Download successful"
+              break
+            else
+              echo "Attempt $i failed, retrying..."
+              sleep 2
+            fi
+            
+            if [ $i -eq 3 ]; then
+              echo "❌ Download failed after 3 attempts"
+              exit 1
+            fi
+          done
+          
+          # Extract
+          sudo tar -xzf "apache-maven-${MAVEN_VERSION}-bin.tar.gz" -C /opt/
+          sudo ln -sfn "/opt/apache-maven-${MAVEN_VERSION}" /opt/maven
+          sudo chmod -R 755 "/opt/apache-maven-${MAVEN_VERSION}"
+          
+          # Add to PATH
           echo "/opt/maven/bin" >> $GITHUB_PATH
+          
+          # Verify
+          /opt/maven/bin/mvn -version
+          
+          # Cleanup
+          cd ~
+          rm -rf $MAVEN_DIR
 
       - name: Verify Maven Installation
-        run: mvn -version
+        run: |
+          # Try with PATH first
+          if command -v mvn &> /dev/null; then
+            echo "✓ Maven found in PATH"
+            mvn -version
+          # Fallback to direct path
+          elif [ -f /opt/maven/bin/mvn ]; then
+            echo "✓ Maven found at /opt/maven/bin/mvn"
+            /opt/maven/bin/mvn -version
+          else
+            echo "❌ Maven not found!"
+            exit 1
+          fi
 
       - name: Build with Maven
-        run: mvn clean package -DskipTests
+        run: |
+          # Use mvn if in PATH, otherwise use full path
+          if command -v mvn &> /dev/null; then
+            mvn clean package -DskipTests
+          else
+            /opt/maven/bin/mvn clean package -DskipTests
+          fi
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v2
