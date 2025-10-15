@@ -24,6 +24,7 @@ on:
 
 env:
   AWS_REGION: us-east-2
+  # Fallback if account-id secrets are absent (still overridden by STS below)
   AWS_ACCOUNT_ID: 248189908663
   ECR_REPO: fintech-app
 
@@ -39,239 +40,28 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v3
 
-      - name: Set up JDK with Maven
+      - name: Set up JDK
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
-
-      - name: Setup Maven from Apache (if needed)
-        run: |
-          # Check if mvn is available
-          if command -v mvn &> /dev/null; then
-            echo "✓ Maven already available"
-            mvn -version
-            exit 0
-          fi
-          
-          # Check /opt/maven
-          if [ -f /opt/maven/bin/mvn ]; then
-            echo "✓ Maven found at /opt/maven"
-            echo "/opt/maven/bin" >> $GITHUB_PATH
-            /opt/maven/bin/mvn -version
-            exit 0
-          fi
-          
-          # Install Maven
-          echo "Installing Maven 3.9.9..."
-          MAVEN_VERSION=3.9.9
-          MAVEN_DIR=/tmp/maven-install
-          
-          mkdir -p $MAVEN_DIR
-          cd $MAVEN_DIR
-          
-          for i in {1..3}; do
-            if wget --no-verbose "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; then
-              echo "✓ Download successful"
-              break
-            fi
-            sleep 2
-            [ $i -eq 3 ] && exit 1
-          done
-          
-          echo "Extracting Maven..."
-          sudo tar -xzf "apache-maven-${MAVEN_VERSION}-bin.tar.gz" -C /opt/
-          
-          [ ! -d "/opt/apache-maven-${MAVEN_VERSION}" ] && exit 1
-          
-          echo "Creating symlink..."
-          if [ -d /opt/maven ] && [ ! -L /opt/maven ]; then
-            sudo rm -rf /opt/maven
-          elif [ -L /opt/maven ]; then
-            sudo rm -f /opt/maven
-          fi
-          
-          sudo ln -sfn "/opt/apache-maven-${MAVEN_VERSION}" /opt/maven
-          sudo chmod -R 755 "/opt/apache-maven-${MAVEN_VERSION}"
-          
-          [ ! -f /opt/maven/bin/mvn ] && exit 1
-          
-          echo "/opt/maven/bin" >> $GITHUB_PATH
-          /opt/maven/bin/mvn -version
-          
-          cd ~
-          rm -rf $MAVEN_DIR
-          echo "✓ Maven installation complete"
-
-      - name: Verify Maven Installation
-        run: |
-          if command -v mvn &> /dev/null; then
-            echo "✓ Maven found in PATH"
-            mvn -version
-          elif [ -f /opt/maven/bin/mvn ]; then
-            echo "✓ Maven found at /opt/maven/bin/mvn"
-            /opt/maven/bin/mvn -version
-          else
-            echo "❌ Maven not found!"
-            exit 1
-          fi
 
       - name: Build with Maven
         run: |
-          if command -v mvn &> /dev/null; then
-            mvn clean package -DskipTests
-          else
-            /opt/maven/bin/mvn clean package -DskipTests
-          fi
+          source /etc/profile.d/maven.sh || true
+          mvn clean package -DskipTests
 
-      - name: Ensure SonarQube is Running
-        run: |
-          echo "=== Checking SonarQube Status ==="
-          
-          # Check if SonarQube service exists
-          if ! systemctl list-unit-files | grep -q sonar.service; then
-            echo "⚠️  SonarQube is not installed, installing now..."
-            echo "This will take 10-15 minutes..."
-            echo ""
-            
-            # Try multiple locations for the setup script
-            SETUP_SCRIPT=""
-            
-            if [ -f "$GITHUB_WORKSPACE/setup_sonarqube.sh" ]; then
-              SETUP_SCRIPT="$GITHUB_WORKSPACE/setup_sonarqube.sh"
-              echo "✓ Found setup_sonarqube.sh in repo root"
-            elif [ -f "$GITHUB_WORKSPACE/eks_addons/script/sonar.sh" ]; then
-              SETUP_SCRIPT="$GITHUB_WORKSPACE/eks_addons/script/sonar.sh"
-              echo "✓ Found sonar.sh in eks_addons/script/"
-            elif [ -f "$GITHUB_WORKSPACE/sonar.sh" ]; then
-              SETUP_SCRIPT="$GITHUB_WORKSPACE/sonar.sh"
-              echo "✓ Found sonar.sh in repo root"
-            fi
-            
-            if [ -n "$SETUP_SCRIPT" ]; then
-              echo "Running setup script: $SETUP_SCRIPT"
-              chmod +x "$SETUP_SCRIPT"
-              "$SETUP_SCRIPT"
-              echo "✓ SonarQube installation completed"
-            else
-              echo "❌ Setup script not found!"
-              echo "Looked in:"
-              echo "  - setup_sonarqube.sh (root)"
-              echo "  - eks_addons/script/sonar.sh"
-              echo "  - sonar.sh (root)"
-              exit 1
-            fi
-          fi
-          
-          # Check if service is running
-          if ! sudo systemctl is-active --quiet sonar.service; then
-            echo "⚠️  SonarQube service is not running, starting it..."
-            sudo systemctl start sonar.service
-            
-            echo "Waiting for SonarQube to start..."
-            for i in {1..60}; do
-              if sudo systemctl is-active --quiet sonar.service; then
-                echo "✓ SonarQube service started"
-                break
-              fi
-              sleep 2
-              if [ $i -eq 60 ]; then
-                echo "❌ SonarQube failed to start"
-                sudo journalctl -u sonar.service -n 50 --no-pager
-                exit 1
-              fi
-            done
-          else
-            echo "✓ SonarQube service is already running"
-          fi
-          
-          # Wait for SonarQube web interface to be ready
-          echo "Waiting for SonarQube web interface..."
-          SONAR_URL="${{ secrets.SONAR_HOST_URL }}"
-          
-          if [ -z "$SONAR_URL" ]; then
-            echo "⚠️  SONAR_HOST_URL not set, using localhost"
-            SONAR_URL="http://127.0.0.1:9000"
-          fi
-          
-          for i in {1..40}; do
-            if curl -s -o /dev/null -w "%{http_code}" "$SONAR_URL/api/system/status" | grep -q "200"; then
-              echo "✓ SonarQube is ready at $SONAR_URL"
-              break
-            fi
-            echo "Attempt $i/40: Waiting for SonarQube..."
-            sleep 5
-            if [ $i -eq 40 ]; then
-              echo "⚠️  SonarQube taking longer than expected"
-              echo "Continuing anyway - it may still be starting up"
-              break
-            fi
-          done
-          
-          echo "✓ SonarQube check complete"
-
-      - name: Validate SonarQube Configuration
-        run: |
-          echo "Checking SonarQube configuration..."
-          
-          if [ -z "${{ secrets.SONAR_HOST_URL }}" ]; then
-            echo "⚠️  SONAR_HOST_URL secret is not set!"
-            echo ""
-            echo "📌 FIRST TIME SETUP REQUIRED:"
-            echo "   1. Access SonarQube at: http://$(hostname -I | awk '{print $1}'):9000"
-            echo "   2. Login with: admin / admin (change password)"
-            echo "   3. Generate token: My Account > Security > Generate Token"
-            echo "   4. Add GitHub secrets at:"
-            echo "      https://github.com/${{ github.repository }}/settings/secrets/actions"
-            echo "   5. Add two secrets:"
-            echo "      • SONAR_HOST_URL: http://$(hostname -I | awk '{print $1}'):9000"
-            echo "      • SONAR_TOKEN: [your-generated-token]"
-            echo ""
-            echo "⏭️  Continuing with localhost for now..."
-            echo "   (Analysis will work but results won't be visible in SonarQube dashboard)"
-          fi
-          
-          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
-            echo "⚠️  SONAR_TOKEN secret is not set!"
-            echo "   Generate token in SonarQube and add it to GitHub secrets"
-            echo "⏭️  Continuing without authentication..."
-          else
-            echo "✓ SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}"
-            echo "✓ SONAR_TOKEN: [REDACTED]"
-            echo "✓ Configuration validated"
-          fi
-
-      - name: Run SonarQube Analysis
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        run: |
-          echo "Running SonarQube analysis..."
-          
-          if command -v mvn &> /dev/null; then
-            MVN_CMD="mvn"
-          else
-            MVN_CMD="/opt/maven/bin/mvn"
-          fi
-          
-          # Use localhost if secrets not set (for first-time setup)
-          SONAR_URL="${SONAR_HOST_URL:-http://127.0.0.1:9000}"
-          SONAR_AUTH="${SONAR_TOKEN:-admin}"
-          
-          $MVN_CMD sonar:sonar \
-            -Dsonar.projectKey=fintech-app \
-            -Dsonar.projectName=fintech-app \
-            -Dsonar.host.url=$SONAR_URL \
-            -Dsonar.login=$SONAR_AUTH \
-            -Dsonar.java.binaries=target/classes || {
-              echo "⚠️  SonarQube analysis failed"
-              echo "This is expected on first run before secrets are configured"
-              echo "The build will continue..."
-              exit 0
-            }
-          
-          echo "✓ SonarQube analysis completed"
+        with:
+          args: >
+            -Dsonar.projectKey=fintech-app
+            -Dsonar.projectName='fintech-app'
+            -Dsonar.sources=.
+            -Dsonar.java.binaries=target/classes
 
       - name: Set Image Tag
         id: set-tag
@@ -285,6 +75,7 @@ jobs:
           fi
           echo "image-tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # Moved up so STS is available to resolve account ID if secrets are missing
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -292,15 +83,54 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve Environment Config (with STS fallback)
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment || 'prod' }}"
+
+          # Prefer per-env secrets if present
+          case "$ENV" in
+            dev)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_DEV }}";;
+            qa)   ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_QA }}";;
+            uat)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_UAT }}";;
+            prod) ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_PROD }}";;
+            *) echo "Unknown environment: $ENV"; exit 1;;
+          esac
+
+          # Fallback to STS (requires AWS creds configured above)
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            echo "No per-env AWS Account ID secret set for ENV=$ENV. Falling back to STS…"
+            ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text || true)"
+          fi
+
+          # Final fallback to env var if STS failed (e.g., offline)
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
+          fi
+
+          # Validate we have a 12-digit account ID
+          if ! [[ "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]; then
+            echo "❌ Could not determine a valid AWS Account ID for ENV=$ENV."
+            echo "   Set secrets AWS_ACCOUNT_ID_${ENV^^} or ensure AWS creds are valid for STS."
+            exit 1
+          fi
+
+          echo "env-name=$ENV" >> "$GITHUB_OUTPUT"
+          echo "account-id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+          echo "Resolved AWS Account ID: $ACCOUNT_ID"
+
       - name: Login to AWS ECR
         run: |
           aws ecr get-login-password --region $AWS_REGION | \
-          docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          docker login --username AWS --password-stdin ${{ steps.resolve.outputs.account-id }}.dkr.ecr.$AWS_REGION.amazonaws.com
 
       - name: Build and Push Docker Image
         run: |
           IMAGE_TAG=${{ steps.set-tag.outputs.image-tag }}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+          ACCOUNT_ID=${{ steps.resolve.outputs.account-id }}
+          IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
           echo "🔨 Building Docker image: $IMAGE_URI"
           docker build -t $IMAGE_URI .
           echo "📤 Pushing Docker image..."
@@ -310,7 +140,8 @@ jobs:
         if: always()
         run: |
           IMAGE_TAG=${{ steps.set-tag.outputs.image-tag }}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+          ACCOUNT_ID=${{ steps.resolve.outputs.account-id }}
+          IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
           echo "🧹 Cleaning up Docker image: $IMAGE_URI"
           docker rmi -f $IMAGE_URI || true
           docker image prune -af --filter "until=24h" || true
@@ -321,7 +152,7 @@ jobs:
         if: success()
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"✅ *Build Succeeded* by `${{ github.actor }}` in `${{ github.event.inputs.environment || 'prod' }}`."}' \
+            --data '{"text":"✅ *Build Succeeded* by `${{ github.actor }}` in `${{ steps.resolve.outputs.env-name }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack (❌ Build Failed)
@@ -340,15 +171,55 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v3
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve Environment Config (with STS fallback)
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment || 'prod' }}"
+
+          case "$ENV" in
+            dev)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_DEV }}";;
+            qa)   ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_QA }}";;
+            uat)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_UAT }}";;
+            prod) ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_PROD }}";;
+            *) echo "Unknown environment: $ENV"; exit 1;;
+          esac
+
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            echo "No per-env AWS Account ID secret set for ENV=$ENV. Falling back to STS…"
+            ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text || true)"
+          fi
+
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
+          fi
+
+          if ! [[ "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]; then
+            echo "❌ Could not determine a valid AWS Account ID for ENV=$ENV."
+            exit 1
+          fi
+
+          echo "env-name=$ENV" >> "$GITHUB_OUTPUT"
+          echo "account-id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+          echo "Resolved AWS Account ID: $ACCOUNT_ID"
+
       - name: Notify Slack (🚀 Starting Deployment)
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"🚀 *Deployment started* in `${{ github.event.inputs.environment || 'prod' }}`."}' \
+            --data '{"text":"🚀 *Deployment started* in `${{ steps.resolve.outputs.env-name }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Configure kubectl via AWS CLI
         run: |
-          CLUSTER_NAME=${{ github.event.inputs.environment || 'prod' }}-cloudsroot-cluster
+          CLUSTER_NAME=${{ steps.resolve.outputs.env-name }}-dominion-cluster
           aws eks update-kubeconfig --region $AWS_REGION --name "$CLUSTER_NAME"
 
       - name: Verify EKS Access
@@ -369,37 +240,59 @@ jobs:
           kubectl apply -k ./eks_addons/monitoring
           kubectl apply -k ./eks_addons/elk
 
-      - name: Deploy Application via Kustomize
+      - name: Update overlay image reference
         run: |
-          ENV=${{ github.event.inputs.environment || 'prod' }}
-          IMAGE_TAG=${{ needs.build-and-push.outputs.image-tag }}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
-          OVERLAY_DIR=./k8s/overlays/$ENV
+          set -euo pipefail
+          ENV="${{ steps.resolve.outputs.env-name }}"
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+          ACCOUNT_ID="${{ steps.resolve.outputs.account-id }}"
+          REGION="$AWS_REGION"
+          REPO="$ECR_REPO"
+          IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO:$IMAGE_TAG"
 
-          echo "🔧 Deploying to: $ENV"
-          echo "📦 Using Docker image: $IMAGE_URI"
+          FILE=""
+          for p in "./k8s/overlays/$ENV/patch-deployment.yaml" \
+                   "./fintech-app/k8s/overlays/$ENV/patch-deployment.yaml" \
+                   "/fintech-app/k8s/overlays/$ENV/patch-deployment.yaml"; do
+            if [ -f "$p" ]; then FILE="$p"; break; fi
+          done
 
-          if [ ! -d "$OVERLAY_DIR" ]; then
-            echo "❌ Overlay directory $OVERLAY_DIR not found!"
+          if [ -z "$FILE" ]; then
+            echo "❌ patch-deployment.yaml not found for ENV=$ENV"
             exit 1
           fi
 
-          cd "$OVERLAY_DIR"
-          kustomize edit set image $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO=$IMAGE_URI
-          cd -
+          echo "🔧 Patching $FILE with image: $IMAGE_URI"
+          perl -0777 -pe "s|image:\s*[\w\.\-]+\.dkr\.ecr\.[\w-]+\.amazonaws\.com/[\w\.\-]+:[\w\.\-]+|image: $IMAGE_URI|g" -i "$FILE"
 
+          echo "✅ Updated image line:"
+          grep -nE 'image:\s' "$FILE" | head -1
+
+      - name: Deploy Application via Kustomize
+        run: |
+          ENV=${{ steps.resolve.outputs.env-name }}
+          OVERLAY_DIR=""
+          for d in "./k8s/overlays/$ENV" "./fintech-app/k8s/overlays/$ENV" "/fintech-app/k8s/overlays/$ENV"; do
+            if [ -d "$d" ]; then OVERLAY_DIR="$d"; break; fi
+          done
+          if [ -z "$OVERLAY_DIR" ]; then
+            echo "❌ Overlay directory for ENV=$ENV not found"
+            exit 1
+          fi
+
+          echo "📦 Applying Kustomize overlay: $OVERLAY_DIR"
           kubectl apply -k "$OVERLAY_DIR"
 
       - name: Notify Slack (✅ Deploy Success)
         if: success()
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"✅ *Deployment Successful* to `${{ github.event.inputs.environment || 'prod' }}` by `${{ github.actor }}`."}' \
+            --data '{"text":"✅ *Deployment Successful* to `${{ steps.resolve.outputs.env-name }}` by `${{ github.actor }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack (🔥 Deploy Failed)
         if: failure()
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"🔥 *Deployment FAILED* to `${{ github.event.inputs.environment || 'prod' }}`."}' \
+            --data '{"text":"🔥 *Deployment FAILED* to `${{ steps.resolve.outputs.env-name }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
