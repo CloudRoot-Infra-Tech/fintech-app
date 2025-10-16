@@ -24,6 +24,7 @@ on:
 
 env:
   AWS_REGION: us-east-2
+  # Fallback if account-id secrets are absent (still overridden by STS below)
   AWS_ACCOUNT_ID: 248189908663
   ECR_REPO: fintech-app
 
@@ -49,7 +50,6 @@ jobs:
         run: |
           source /etc/profile.d/maven.sh || true
           mvn clean package -DskipTests
-          
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v2
@@ -75,6 +75,7 @@ jobs:
           fi
           echo "image-tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # Moved up so STS is available to resolve account ID if secrets are missing
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -82,15 +83,54 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve Environment Config (with STS fallback)
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment || 'prod' }}"
+
+          # Prefer per-env secrets if present
+          case "$ENV" in
+            dev)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_DEV }}";;
+            qa)   ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_QA }}";;
+            uat)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_UAT }}";;
+            prod) ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_PROD }}";;
+            *) echo "Unknown environment: $ENV"; exit 1;;
+          esac
+
+          # Fallback to STS (requires AWS creds configured above)
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            echo "No per-env AWS Account ID secret set for ENV=$ENV. Falling back to STS…"
+            ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text || true)"
+          fi
+
+          # Final fallback to env var if STS failed (e.g., offline)
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
+          fi
+
+          # Validate we have a 12-digit account ID
+          if ! [[ "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]; then
+            echo "❌ Could not determine a valid AWS Account ID for ENV=$ENV."
+            echo "   Set secrets AWS_ACCOUNT_ID_${ENV^^} or ensure AWS creds are valid for STS."
+            exit 1
+          fi
+
+          echo "env-name=$ENV" >> "$GITHUB_OUTPUT"
+          echo "account-id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+          echo "Resolved AWS Account ID: $ACCOUNT_ID"
+
       - name: Login to AWS ECR
         run: |
           aws ecr get-login-password --region $AWS_REGION | \
-          docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          docker login --username AWS --password-stdin ${{ steps.resolve.outputs.account-id }}.dkr.ecr.$AWS_REGION.amazonaws.com
 
       - name: Build and Push Docker Image
         run: |
           IMAGE_TAG=${{ steps.set-tag.outputs.image-tag }}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+          ACCOUNT_ID=${{ steps.resolve.outputs.account-id }}
+          IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
           echo "🔨 Building Docker image: $IMAGE_URI"
           docker build -t $IMAGE_URI .
           echo "📤 Pushing Docker image..."
@@ -100,7 +140,8 @@ jobs:
         if: always()
         run: |
           IMAGE_TAG=${{ steps.set-tag.outputs.image-tag }}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+          ACCOUNT_ID=${{ steps.resolve.outputs.account-id }}
+          IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
           echo "🧹 Cleaning up Docker image: $IMAGE_URI"
           docker rmi -f $IMAGE_URI || true
           docker image prune -af --filter "until=24h" || true
@@ -111,7 +152,7 @@ jobs:
         if: success()
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"✅ *Build Succeeded* by `${{ github.actor }}` in `${{ github.event.inputs.environment || 'prod' }}`."}' \
+            --data '{"text":"✅ *Build Succeeded* by `${{ github.actor }}` in `${{ steps.resolve.outputs.env-name }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack (❌ Build Failed)
@@ -130,15 +171,55 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v3
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve Environment Config (with STS fallback)
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment || 'prod' }}"
+
+          case "$ENV" in
+            dev)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_DEV }}";;
+            qa)   ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_QA }}";;
+            uat)  ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_UAT }}";;
+            prod) ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID_PROD }}";;
+            *) echo "Unknown environment: $ENV"; exit 1;;
+          esac
+
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            echo "No per-env AWS Account ID secret set for ENV=$ENV. Falling back to STS…"
+            ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text || true)"
+          fi
+
+          if [ -z "${ACCOUNT_ID:-}" ]; then
+            ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
+          fi
+
+          if ! [[ "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]; then
+            echo "❌ Could not determine a valid AWS Account ID for ENV=$ENV."
+            exit 1
+          fi
+
+          echo "env-name=$ENV" >> "$GITHUB_OUTPUT"
+          echo "account-id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+          echo "Resolved AWS Account ID: $ACCOUNT_ID"
+
       - name: Notify Slack (🚀 Starting Deployment)
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"🚀 *Deployment started* in `${{ github.event.inputs.environment || 'prod' }}`."}' \
+            --data '{"text":"🚀 *Deployment started* in `${{ steps.resolve.outputs.env-name }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Configure kubectl via AWS CLI
         run: |
-          CLUSTER_NAME=${{ github.event.inputs.environment || 'prod' }}-dominion-cluster
+          CLUSTER_NAME=${{ steps.resolve.outputs.env-name }}-dominion-cluster
           aws eks update-kubeconfig --region $AWS_REGION --name "$CLUSTER_NAME"
 
       - name: Verify EKS Access
@@ -159,37 +240,59 @@ jobs:
           kubectl apply -k ./eks_addons/monitoring
           kubectl apply -k ./eks_addons/elk
 
-      - name: Deploy Application via Kustomize
+      - name: Update overlay image reference
         run: |
-          ENV=${{ github.event.inputs.environment || 'prod' }}
-          IMAGE_TAG=${{ needs.build-and-push.outputs.image-tag }}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
-          OVERLAY_DIR=./k8s/overlays/$ENV
+          set -euo pipefail
+          ENV="${{ steps.resolve.outputs.env-name }}"
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+          ACCOUNT_ID="${{ steps.resolve.outputs.account-id }}"
+          REGION="$AWS_REGION"
+          REPO="$ECR_REPO"
+          IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO:$IMAGE_TAG"
 
-          echo "🔧 Deploying to: $ENV"
-          echo "📦 Using Docker image: $IMAGE_URI"
+          FILE=""
+          for p in "./k8s/overlays/$ENV/patch-deployment.yaml" \
+                   "./fintech-app/k8s/overlays/$ENV/patch-deployment.yaml" \
+                   "/fintech-app/k8s/overlays/$ENV/patch-deployment.yaml"; do
+            if [ -f "$p" ]; then FILE="$p"; break; fi
+          done
 
-          if [ ! -d "$OVERLAY_DIR" ]; then
-            echo "❌ Overlay directory $OVERLAY_DIR not found!"
+          if [ -z "$FILE" ]; then
+            echo "❌ patch-deployment.yaml not found for ENV=$ENV"
             exit 1
           fi
 
-          cd "$OVERLAY_DIR"
-          kustomize edit set image $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO=$IMAGE_URI
-          cd -
+          echo "🔧 Patching $FILE with image: $IMAGE_URI"
+          perl -0777 -pe "s|image:\s*[\w\.\-]+\.dkr\.ecr\.[\w-]+\.amazonaws\.com/[\w\.\-]+:[\w\.\-]+|image: $IMAGE_URI|g" -i "$FILE"
 
+          echo "✅ Updated image line:"
+          grep -nE 'image:\s' "$FILE" | head -1
+
+      - name: Deploy Application via Kustomize
+        run: |
+          ENV=${{ steps.resolve.outputs.env-name }}
+          OVERLAY_DIR=""
+          for d in "./k8s/overlays/$ENV" "./fintech-app/k8s/overlays/$ENV" "/fintech-app/k8s/overlays/$ENV"; do
+            if [ -d "$d" ]; then OVERLAY_DIR="$d"; break; fi
+          done
+          if [ -z "$OVERLAY_DIR" ]; then
+            echo "❌ Overlay directory for ENV=$ENV not found"
+            exit 1
+          fi
+
+          echo "📦 Applying Kustomize overlay: $OVERLAY_DIR"
           kubectl apply -k "$OVERLAY_DIR"
 
       - name: Notify Slack (✅ Deploy Success)
         if: success()
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"✅ *Deployment Successful* to `${{ github.event.inputs.environment || 'prod' }}` by `${{ github.actor }}`."}' \
+            --data '{"text":"✅ *Deployment Successful* to `${{ steps.resolve.outputs.env-name }}` by `${{ github.actor }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack (🔥 Deploy Failed)
         if: failure()
         run: |
           curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"🔥 *Deployment FAILED* to `${{ github.event.inputs.environment || 'prod' }}`."}' \
+            --data '{"text":"🔥 *Deployment FAILED* to `${{ steps.resolve.outputs.env-name }}`."}' \
             ${{ secrets.SLACK_WEBHOOK_URL }}
