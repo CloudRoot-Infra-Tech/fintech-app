@@ -5,7 +5,7 @@ metadata:
   namespace: monitoring
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-2:248189908663:certificate/3a961478-5092-4195-9ff4-97219a819c34
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-2:248189908663:certificate/e566f7e1-0c1f-4028-b17a-162d72341159
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-port: "80"
@@ -17,7 +17,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-  - host: grafana.dominionsystem.org
+  - host: grafana.cloudsroot.com
     http:
       paths:
       - path: /
